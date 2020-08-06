@@ -4,11 +4,18 @@
 import argparse
 
 def config_opts(parser):
+
     parser.add('-config', '--config', required=False,
                is_config_file_arg=True, help='config file path')
     parser.add('-save_config', '--save_config', required=False,
                is_write_out_config_file_arg=True,
+               default="./config.json",
                help='config file save path')
+    parser.add('--log_file', '-log_file', type=str, default="",
+              help="Output logs to a file under this path.")
+    parser.add('--seed', '-seed', type=int, default=3435,
+              help="Random seed")
+
 
 def model_opts(parser):
     """
