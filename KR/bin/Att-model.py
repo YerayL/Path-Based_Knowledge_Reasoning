@@ -2,12 +2,15 @@ from argparse import ArgumentParser
 import KR.opts as opts
 import sys
 from KR.utils.logging import init_logger, logger
+from KR.utils.regularization import Regularization
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm, trange
 from torch.optim import Adam
 from tensorboardX import SummaryWriter
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 import pandas as pd
 import os
 import time
@@ -17,7 +20,35 @@ from torchtext import data
 from torchtext.data import Iterator, BucketIterator
 from torchtext.vocab import Vectors
 
-from models import RNN, CNN
+# from models import RNN, CNN
+
+
+
+class MyDataset(Dataset):
+    def __init__(self, datas):
+        self.datas = datas
+
+    def __len__(self):
+        return len(self.datas)
+
+    def __getitem__(self, item):
+        toks = self.datas['Phrase'][item]
+        cur_features = InputFeatures(eid=item, input_ids=toks, label_ids=self.datas['label'][item])
+        cur_tensors = (
+
+            torch.LongTensor(cur_features.input_ids),
+            torch.tensor(cur_features.label_ids)
+        )
+        return cur_tensors
+
+class InputFeatures(object):
+    def __init__(self, eid, input_ids, label_ids):
+        self.entity_types_ids = input_ids
+        self.relations_ids = input_ids
+        self.query_ids = input_ids
+        self.label_ids = label_ids
+        self.eid = eid
+
 
 
 
@@ -36,7 +67,7 @@ def Att_Model(opt):
                    device="cuda")
     vocab_size = len(TEXT.vocab.itos)
 
-    
+
     # build model
     emb = nn.Embedding(num_embeddings=vocab_size, embedding_dim=250, padding_idx=0)
     encoder
