@@ -6,8 +6,7 @@
 import torch
 import torch.nn as nn
 import math
-
-
+import torch.nn.functional as F
 class RNNCell_rel(nn.Module):
     def __init__(self, e_input_size, r_input_size, hidden_size):
         super(RNNCell_rel, self).__init__()
@@ -24,14 +23,14 @@ class RNNCell_rel(nn.Module):
         for w in self.parameters():
             w.data.uniform_(-std, std)
 
-    def forward(self, e,r, hidden):
+    def forward(self, e, r, hidden):
         '''
 
         :param x: [batch_size, input_size]
         :param hidden: [batch_size, hidden_size]
         :return: h_n: [batch_size, hidden_size]
         '''
-        return torch.tanh(self.e2h(e) + self.r2h(r) + self.h2h(hidden))
+        return torch.relu(self.e2h(e) + self.r2h(r) + self.h2h(hidden))
 
 
 class GRUCell(nn.Module):
@@ -105,7 +104,7 @@ class LSTMCell(nn.Module):
 
 
 class RNNModel(nn.Module):
-    def __init__(self, e_input_size, r_input_size, hidden_size, num_layers=1, bidirectional=False, batch_first=True, dropout=0,
+    def __init__(self, e_input_size=100, r_input_size=250, hidden_size=250, num_layers=1, bidirectional=False, batch_first=True, dropout=0,
                  mode="RNN"):
         super(RNNModel, self).__init__()
         self.bidirectional = bidirectional
@@ -116,6 +115,8 @@ class RNNModel(nn.Module):
         self.batch_first = batch_first
         self.dropout = nn.Dropout(dropout)
         self.cells = cells = nn.ModuleList()
+
+
         if mode == "RNN":
             cell_cls = RNNCell_rel
         elif mode == "GRU":
@@ -131,40 +132,42 @@ class RNNModel(nn.Module):
                                                                                          hidden_size)
                 cells.append(rnn_cell)
 
-    def forward(self, x):
+    def forward(self, entity, relation):
         '''
 
         :param x: [batch_size, max_seq_length, input_size] if batch_first is True
         :return: output: [batch, seq_len, num_directions * hidden_size] if batch_first is True
                  hidden: [num_layers * num_directions, batch, hidden_size] if mode is "RNN" or "GRU", if mode is "LSTM",
                          hidden will be (h_n, c_n), each size is [num_layers * num_directions, batch, hidden_size].
-
         '''
         if self.batch_first:
-            batch_size = x.size(0)
-            inputs = x.transpose(0, 1)
+            batch_size = entity.size(0)
+            inputs_ent = entity.transpose(0, 2)
+            inputs_rel = relation.transpose(0, 2)
         else:
-            batch_size = x.size(1)
-            inputs = x
-        h0 = torch.zeros(self.num_layers * self.num_directions, batch_size, self.hidden_size).to(x.device)
+            batch_size = entity.size(1)
+            inputs_ent = entity
+            inputs_rel = relation
+
+        h0 = torch.zeros(self.num_layers * self.num_directions, batch_size, self.hidden_size).to(entity.device)
         if self.mode == 'LSTM':
             h0 = (h0, h0)
         outs = []
         hiddens = []
         for layer in range(self.num_layers):
-            inputs = inputs if layer == 0 else self.dropout(outs)  # [max_seq_length, batch_size, layer_input_size]
+            # inputs = inputs if layer == 0 else self.dropout(outs)  # [max_seq_length, batch_size, layer_input_size]
             layer_outs_with_directions = []
             for direction in range(self.num_directions):
                 idx = layer * self.num_directions + direction
-                inputs = inputs if direction == 0 else inputs.flip(0)
+                # inputs = inputs if direction == 0 else inputs.flip(0)
                 rnn_cell = self.cells[idx]
                 if self.mode == 'LSTM':
                     layer_hn = (h0[0][idx], h0[1][idx])  # tuple of [batch_size, hidden_size], (h0, c0)
                 else:
                     layer_hn = h0[idx]
                 layer_outs = []
-                for time_step in range(inputs.size(0)):
-                    layer_hn = rnn_cell(inputs[time_step], layer_hn)
+                for time_step in range(8):
+                    layer_hn = rnn_cell(inputs_ent[time_step],inputs_rel[time_step], layer_hn)
                     layer_outs.append(layer_hn)
                 if self.mode == 'LSTM':
                     layer_outs = torch.stack([out[0] for out in layer_outs])  # [max_seq_len, batch_size, hidden_size]
@@ -175,15 +178,58 @@ class RNNModel(nn.Module):
             outs = torch.cat(layer_outs_with_directions, -1)  # [max_seq_len, batch_size, 2*hidden_size]
 
         if self.batch_first:
-            output = outs.transpose(0, 1)
+            output = outs.transpose(0, 2)
         else:
             output = outs
         if self.mode == 'LSTM':
             hidden = (torch.stack([h[0] for h in hiddens]), torch.stack([h[1] for h in hiddens]))
         else:
             hidden = torch.stack(hiddens)
+        need = hidden[0].transpose(0, 1)
+        return output, need
 
-        return output, hidden
+
+class Classifier(nn.Module):
+    def __init__(self, encoder):
+        super().__init__()
+        # out_dim = encoder.hidden_size
+        self.entity_emb = nn.Embedding(num_embeddings=2218, embedding_dim=100, padding_idx=2217)
+        self.relation_emb = nn.Embedding(num_embeddings=51390, embedding_dim=250, padding_idx=51389)
+        self.query_emb = nn.Embedding(num_embeddings=46, embedding_dim=250, padding_idx=None)
+        self.encoder = encoder
+        # self.out = nn.Sequential(
+        #     nn.Linear(out_dim, out_dim),
+        #     nn.Tanh())
+
+    def forward(self, entity, relation, query, path_num):
+        entity_types = self.entity_emb(entity)     # [batch_size,path_num,path_length,entity_types_num,emb_dim]
+        relation = self.relation_emb(relation)
+        query = self.query_emb(query)   # [1,emb_dim]
+        entity = entity_types.sum(3)/7    # [batch_size,path_num,path_length,emb_dim]
+        # for i in range(path_num):
+        #     _, x = self.encoder(entity[:, i], relation[:, i])
+        #     if i == 0:
+        #         path = x
+        #     elif i == 1:
+        #         path = torch.stack([path, x], dim=1)
+        #     else:
+        #         x = torch.unsqueeze(x, dim=1)
+        #         path = torch.cat([path, x], dim=1)
+        _, path = self.encoder(entity, relation)
+
+        # path:[batch_size,path_num,hid_dim] query: [1,250]
+        query = torch.unsqueeze(query, dim=1)
+        a = F.softmax(torch.mul(path, query).sum(2))
+        a = torch.unsqueeze(a, dim=2)
+        context = torch.mul(a, path).sum(1)
+        score1 = torch.sum(torch.mul(nn.Tanh()(context), torch.squeeze(query)), dim=1, keepdim=True).float()
+        inv_score = score1 - score1
+        _score = torch.cat([inv_score, score1], dim=1)
+        p = F.softmax(_score)
+        score = F.log_softmax(_score)
+        return p, score
+
+
 
 
 def test_RNN_Model():

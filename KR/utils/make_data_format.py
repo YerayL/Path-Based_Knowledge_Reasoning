@@ -4,7 +4,9 @@ import argparse
 import gzip
 
 parser = argparse.ArgumentParser()
+
 parser.add_argument('-i', '--input_data', type=str, default='./data/chains_of_reasoning_eacl_dataset')
+# parser.add_argument('-i', '--input_data', type=str, default='./ChainsofReasoning/examples/data_small_input')
 parser.add_argument('-d', '--output_data', type=str, default='./data/data_output')
 parser.add_argument('-o', '--only_relation', type=bool, default=False,
                     help="This option to be used when data doesnot have entities")
